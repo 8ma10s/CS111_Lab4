@@ -8,6 +8,9 @@
 #include <mraa/aio.h>
 #include <string.h>
 #include <ctype.h>
+#include <pthread.h>
+
+pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
 
 struct rArg{
 	int fd;
@@ -16,14 +19,16 @@ struct rArg{
 	int metric;
 	int period;
 	int disp;
+	FILE *srlog;
 	char buf[1024];
 };
 
-void doReceive(struct rArg *status);
+void *doReceive(void *vStatus);
 
 int main(){
 
 	//socket variables
+	FILE *srlog = fopen("part2.txt", "w+");
 	int fd, err;
 	const char *hostname = "r01.cs.ucla.edu";
 	const char *port = "16000";
@@ -65,20 +70,18 @@ int main(){
 	status.metric = 0;
 	status.period = 3;
 	status.disp = 1;
-	timeout.tv_sec = 0;
-	timeout.tv_usec = 0;
+	status.srlog = srlog;
+
+	pthread_t rt;
+	pthread_create(&rt, NULL, doReceive, (void*)&status);
 
 	send(fd, "804608241", 10, 0);
+	printf("804608241\n");
+	pthread_mutex_lock(&m);
+	fprintf(srlog, "804608241\n");
+	pthread_mutex_unlock(&m);
+
  	while(!status.off){
-
-		FD_ZERO(&fds);
-		FD_SET(fd, &fds);
-		select(fd+1, &fds, NULL, NULL, &timeout);
-
-		if(FD_ISSET(fd, &fds)){
-			doReceive(&status);
-		}
-
 		//if not supposed to send, continue (that is, status == STOP)
 		if(!status.send){
 			continue;
@@ -99,89 +102,104 @@ int main(){
 		sprintf(toSend, "804608241 TEMP=%4.1f", t);
 
 		//output each second
+		if(status.off){
+			break;
+		}
 		send(fd, toSend, 20, 0);
 		printf("%s\n", toSend);
+		pthread_mutex_lock(&m);
+		fprintf(srlog, "%s\n", toSend);
+		pthread_mutex_unlock(&m);
 		sleep(status.period);
 	}
 
+	pthread_join(rt, NULL);
 	close(fd);
+	fclose(srlog);
 	freeaddrinfo(res);
 	mraa_aio_close(tempSensor);
 }	
 
-void doReceive(struct rArg *status){
+void *doReceive(void *vStatus){
 	//set up variables
+	struct rArg *status = (struct rArg*) vStatus;
 	int fd = status->fd;
 	char *buf = status->buf;
 	int i, arg;
-	int isValid = 1;
-	int bytes = recv(fd, buf, 1024, 0);
-	buf[bytes] = '\0';
-	printf("received command: %s, num: %d\n", buf, bytes);
-	//off
-	if(strcmp(buf, "OFF") == 0){
-		status->off = 1;
-	}
-	//start
-	else if(strcmp(buf, "START") == 0){
-		status->send = 1;
-	}
-	//stop
-	else if(strcmp(buf, "STOP") == 0){
-		status->send = 0;
-	}
-	//period
-	else if(strncmp(buf, "PERIOD=", 7) == 0){
-		for (i = 7; buf[i] != '\0'; i++){
-			if(!isdigit((int)buf[i])){
-				sprintf(buf, "%s I", buf);
-				isValid = 0;
-				break;
+	int isValid;
+	while(!status->off){
+		isValid= 1;
+		int bytes = recv(fd, buf, 1024, 0);
+		buf[bytes] = '\0';
+		printf("received command: %s, num: %d\n", buf, bytes);
+		//off
+		if(strcmp(buf, "OFF") == 0){
+			status->off = 1;
+		}
+		//start
+		else if(strcmp(buf, "START") == 0){
+			status->send = 1;
+		}
+		//stop
+		else if(strcmp(buf, "STOP") == 0){
+			status->send = 0;
+		}
+		//period
+		else if(strncmp(buf, "PERIOD=", 7) == 0){
+			for (i = 7; buf[i] != '\0'; i++){
+				if(!isdigit((int)buf[i])){
+					sprintf(buf, "%s I", buf);
+					isValid = 0;
+					break;
+				}
+			}
+			if(isValid){
+				arg = atoi(buf+7);
+				if(arg < 1 || arg > 3600){
+					sprintf(buf, "%s I", buf);
+				}
+				else{
+					status->period = arg;
+				}
 			}
 		}
-		if(isValid){
-			arg = atoi(buf+7);
-			if(arg < 1 || arg > 3600){
+		//scal	e
+		else if(strncmp(buf, "SCALE=", 6) == 0){
+			if(strlen(buf) != 7){
 				sprintf(buf, "%s I", buf);
+			}
+			else if(buf[6] == 'F'){
+				status->metric = 0;
+			}
+			else if(buf[6] == 'C'){
+				status->metric = 1;
 			}
 			else{
-				status->period = arg;
+				sprintf(buf, "%s I", buf);
 			}
 		}
-	}
-	//scale
-	else if(strncmp(buf, "SCALE=", 6) == 0){
-		if(strlen(buf) != 7){
-			sprintf(buf, "%s I", buf);
-		}
-		else if(buf[6] == 'F'){
-			status->metric = 0;
-		}
-		else if(buf[6] == 'C'){
-			status->metric = 1;
-		}
-		else{
-			sprintf(buf, "%s I", buf);
-		}
-	}
-	//disp
-	else if(strncmp(buf, "DISP ", 5) == 0){
-		if(strlen(buf) != 6){
-			sprintf(buf, "%s I", buf);
-		}
-		else if (buf[5] == 'Y'){
-			status->disp = 1;
-		}
-		else if(buf[5] == 'N'){
-			status->disp = 0;
+		//disp
+		else if(strncmp(buf, "DISP ", 5) == 0){
+			if(strlen(buf) != 6){
+				sprintf(buf, "%s I", buf);
+			}
+			else if (buf[5] == 'Y'){
+				status->disp = 1;
+			}
+			else if(buf[5] == 'N'){
+				status->disp = 0;
+			}
+			else{
+				sprintf(buf, "%s I", buf);
+			}
 		}
 		else{
 			sprintf(buf, "%s I", buf);
 		}
+		
+		printf("%s\n", buf);
+		pthread_mutex_lock(&m);
+		fprintf(status->srlog, "%s\n", buf);
+		pthread_mutex_unlock(&m);
 	}
-	else{
-		sprintf(buf, "%s I", buf);
-	}
-	
-	printf("%s\n", buf);
 }
