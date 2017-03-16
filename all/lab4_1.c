@@ -8,7 +8,7 @@ int main(){
 	int i;
 	mraa_aio_context tempSensor;
 	tempSensor = mraa_aio_init(0);
-	FILE *fd = fopen("part1.txt", "w+");
+	FILE *fd = fopen("lab4_1.log", "w+");
 	//variables
 	int temp;
 	float R, t;
@@ -28,7 +28,6 @@ int main(){
 		t = 1.0/(log(R/100000.0)/4275+1/298.15)-273.15;
 		t = (t * 1.8) + 32;
 		//convert time
-		timer -= 25200;
 		t_st = localtime(&timer);
 
 		//output each second
